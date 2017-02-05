@@ -12,8 +12,12 @@ type TGeo = { name: string, geocombo: string };
 function log(msg: string, ...args: any[]) {
 
     msg = "unit report: " + msg;
-    logDebug(msg, args);
+    let arr: any[] = [];
+    arr.push(msg);
+    arr.push.apply(arr, args);
+    logDebug.apply(null, arr);
 }
+
 
 function run() {
 
@@ -104,10 +108,10 @@ function run() {
             let quantity = numberfyOrError(m, -1);
             let price = numberfy($tds.eq(4).text());   // может быть не изв. как значение
             let share = numberfyOrError($tds.eq(5).text(), -1);
-            if (quantities != null) {
-                let src = $(e).find("img").attr("src");
+
+            let src = $(e).find("img").attr("src");
+            if (quantities && quantities[src])
                 quantity = quantities[src] * share / 100.0;
-            }
 
             let turnover = price > 0 ? quantity * price : 0;
             let maxTurnover = share > 0 ? turnover * 100 / share : 0;
@@ -175,8 +179,8 @@ function run() {
 
                     $.when.apply($, tasks)
                         .then((...args: number[]) => {
-                            if (args.length != imgSrcs.length)
-                                throw new Error("report: объемов рынков загрузилось не такое же колво что и товаров");
+                            //if (args.length != imgSrcs.length)
+                            //    throw new Error("report: объемов рынков загрузилось не такое же колво что и товаров");
 
                             let quantities: IDictionary<number> = {};
                             Object.keys(sources).forEach((val, i, arr) => {
@@ -213,12 +217,17 @@ function run() {
                 let imgSrc = imgs[i];
 
                 // среди продуктов найдем по картинке нужный
+                // НО есть разные брендовые товары которых нет в основном списке товаров. Их тупо пропустить
+                if (!preparedProd[imgSrc])
+                    continue;
+
                 let prodId = preparedProd[imgSrc].id;
                 let geo = geos[cityName].geocombo;
                 // /lien/main/globalreport/marketing/by_trade_at_cities/370077/7060/7065/7087
                 // <option class="geocombo f-mx" value="/422607/422609/422632">Акапулько</option>
                 let url = `/${realm}/main/globalreport/marketing/by_trade_at_cities/${prodId}${geo}`;
                 res[imgSrc] = url;
+
             }
 
             return res;

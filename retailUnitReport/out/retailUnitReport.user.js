@@ -7,7 +7,7 @@ var __extends = (this && this.__extends) || function (d, b) {
 // @name          Retail Unit Turnover report
 // @namespace     virtonomica
 // @description   Выводит для чужого юнита выручку по каждому товару, возможную выручку. Так же общую текущую выручку для юнита и потенциал если занять весь рынок по текущим ценам.
-// @version       1.3
+// @version       1.4
 // @include       https://virtonomic*.*/*/main/unit/view/*
 // @include       https://virtonomic*.*/*/window/unit/view/*
 // @require       https://code.jquery.com/jquery-1.11.1.min.js
@@ -64,6 +64,12 @@ function getRealm() {
     if (m == null)
         return null;
     return m[1];
+}
+function getRealmOrError() {
+    var realm = getRealm();
+    if (realm === null)
+        throw new Error("Не смог определить реалм по ссылке " + document.location.href);
+    return realm;
 }
 /**
  * Парсит id компании со страницы и выдает ошибку если не может спарсить
@@ -284,7 +290,7 @@ var url_supply_rx = /\/[a-z]+\/unit\/supply\/create\/\d+\/step2\/?$/i; // зак
 var url_equipment_rx = /\/[a-z]+\/window\/unit\/equipment\/\d+\/?$/i; // заказ оборудования на завод, лабу или куда то еще
 // для компании
 // 
-var url_unit_list_rx = /\/[a-z]+\/(?:main|window)\/company\/view\/\d+(\/unit_list)?$/i; // список юнитов. Работает и для списка юнитов чужой компании
+var url_unit_list_rx = /\/[a-z]+\/(?:main|window)\/company\/view\/\d+(\/unit_list)?(\/xiooverview)?$/i; // список юнитов. Работает и для списка юнитов чужой компании
 var url_rep_finance_byunit = /\/[a-z]+\/main\/company\/view\/\d+\/finance_report\/by_units(?:\/.*)?$/i; // отчет по подразделениями из отчетов
 var url_rep_ad = /\/[a-z]+\/main\/company\/view\/\d+\/marketing_report\/by_advertising_program$/i; // отчет по рекламным акциям
 var url_manag_equip_rx = /\/[a-z]+\/window\/management_units\/equipment\/(?:buy|repair)$/i; // в окне управления юнитами групповой ремонт или закупка оборудования
@@ -293,6 +299,15 @@ var url_manag_empl_rx = /\/[a-z]+\/main\/company\/view\/\d+\/unit_list\/employee
 // 
 var url_global_products_rx = /[a-z]+\/main\/globalreport\/marketing\/by_products\/\d+\/?$/i; // глобальный отчет по продукции из аналитики
 var url_products_rx = /\/[a-z]+\/main\/common\/main_page\/game_info\/products$/i; // страница со всеми товарами игры
+/**
+ * Если мы внутри своей компании, вернет истину. Если в чужой то ложь.
+ * Можем находиться в любом юните или на главной странице. Не важно.
+ */
+function isMyCompany() {
+    if ($("div.officePlace a").attr("href") + "/dashboard" === $("a.dashboard").attr("href"))
+        return true;
+    return false;
+}
 /**
  * Проверяет что мы именно на своей странице со списком юнитов. По ссылке и id компании
  * Проверок по контенту не проводит.
@@ -449,6 +464,104 @@ function oneOrError($item, selector) {
         throw new Error("\u041D\u0430\u0439\u0434\u0435\u043D\u043E " + $one.length + " \u044D\u043B\u0435\u043C\u0435\u043D\u0442\u043E\u0432 \u0432\u043C\u0435\u0441\u0442\u043E 1 \u0434\u043B\u044F \u0441\u0435\u043B\u0435\u043A\u0442\u043E\u0440\u0430 " + selector);
     return $one;
 }
+// AJAX ----------------------------------------
+/**
+ * Отправляет запрос на установку нужной пагинации. Возвращает promice дальше делай с ним что надо.
+ */
+function doRepage(pages, $html) {
+    // если не задать данные страницы, то считаем что надо использовать текущую
+    if ($html == null)
+        $html = $(document);
+    // снизу всегда несколько кнопок для числа страниц, НО одна может быть уже нажата мы не знаем какая
+    // берем просто любую ненажатую, извлекаем ее текст, на у далее в ссылке всегда
+    // есть число такое же как текст в кнопке. Заменяем на свое и все ок.
+    var $pager = $html.find('ul.pager_options li').has("a").last();
+    var num = $pager.text().trim();
+    var pagerUrl = $pager.find('a').attr('href').replace(num, pages.toString());
+    // запросили обновление пагинации, дальше юзер решает что ему делать с этим
+    var deffered = $.Deferred();
+    $.get(pagerUrl)
+        .done(function (data, status, jqXHR) { return deffered.resolve(data); })
+        .fail(function (err) { return deffered.reject("Не удалось установить пагинацию => " + err); });
+    return deffered.promise();
+}
+/**
+ * Загружается указанную страницу используя заданное число повторов и таймаут. Так же можно задать
+ * нужно ли убирать пагинацию или нет. Если нужно, то функция вернет страничку БЕЗ пагинации
+ * @param url
+ * @param retries число попыток
+ * @param timeout
+ * @param repage нужно ли убирать пагинацию
+ */
+function getPage(url, retries, timeout, repage) {
+    if (retries === void 0) { retries = 10; }
+    if (timeout === void 0) { timeout = 1000; }
+    if (repage === void 0) { repage = true; }
+    var deffered = $.Deferred();
+    // сначала запросим саму страницу с перезапросом по ошибке
+    tryGet(url, retries, timeout)
+        .then(function (html) {
+        var locdef = $.Deferred();
+        if (html == null) {
+            locdef.reject("неизвестная ошибка. страница пришла пустая " + url);
+            return locdef.promise();
+        }
+        // если страниц нет, то как бы не надо ничо репейджить
+        // если не надо репейджить то тоже не будем
+        var $html = $(html);
+        if (!repage || !hasPages($html)) {
+            deffered.resolve(html);
+        }
+        else {
+            // репейджим
+            var purl = getRepageUrl($html, 10000);
+            if (purl == null)
+                locdef.reject("не смог вытащить урл репейджа хотя он там должен быть");
+            else
+                locdef.resolve(purl);
+        }
+        return locdef.promise();
+    }) // если нет репейджа все закончится тут
+        .then(function (purl) {
+        var locdef = $.Deferred();
+        tryGet(purl, retries, timeout)
+            .done(function () { return locdef.resolve(); })
+            .fail(function (err) { return locdef.reject("ошибка репейджа => " + err); });
+        return locdef.promise();
+    }) // запросим установку репейджа
+        .then(function () { return tryGet(url, retries, timeout); }) // снова запросим страницу
+        .then(function (html) { return deffered.resolve(html); })
+        .fail(function (err) { return deffered.reject(err); });
+    return deffered.promise();
+}
+/**
+ * Запрашивает страницу. При ошибке поробует повторить запрос через заданное число секунд.
+ * Пробует заданное число попыток, после чего возвращает reject
+ * @param url
+ * @param retries число попыток загрузки
+ * @param timeout таймаут между попытками
+ */
+function tryGet(url, retries, timeout) {
+    if (retries === void 0) { retries = 10; }
+    if (timeout === void 0) { timeout = 1000; }
+    var deffered = $.Deferred();
+    $.ajax({
+        url: url,
+        type: "GET",
+        success: function (data, status, jqXHR) { return deffered.resolve(data); },
+        error: function (jqXHR, textStatus, errorThrown) {
+            retries--;
+            if (retries <= 0) {
+                deffered.reject("Не смог загрузить страницу " + this.url);
+                return;
+            }
+            logDebug("\u043E\u0448\u0438\u0431\u043A\u0430 \u0437\u0430\u043F\u0440\u043E\u0441\u0430 " + this.url + " \u043E\u0441\u0442\u0430\u043B\u043E\u0441\u044C " + retries + " \u043F\u043E\u043F\u044B\u0442\u043E\u043A");
+            var _this = this;
+            setTimeout(function () { return $.ajax(_this); }, timeout);
+        }
+    });
+    return deffered.promise();
+}
 // COMMON ----------------------------------------
 var $xioDebug = false;
 function logDebug(msg) {
@@ -477,20 +590,20 @@ function hasPages($html) {
     return $pageLinks.length > 2;
 }
 /**
- * Отправляет запрос на установку нужной пагинации. Возвращает promice дальше делай с ним что надо.
+ * Формирует ссылку на установку новой пагинации. Если страница не имеет пагинатора, вернет null
+ * @param $html
+ * @param pages число элементов на страницу которое установить
  */
-function repage(pages, $html) {
-    // если не задать данные страницы, то считаем что надо использовать текущую
-    if ($html == null)
-        $html = $(document);
+function getRepageUrl($html, pages) {
+    if (pages === void 0) { pages = 10000; }
+    if (!hasPages($html))
+        return null;
     // снизу всегда несколько кнопок для числа страниц, НО одна может быть уже нажата мы не знаем какая
     // берем просто любую ненажатую, извлекаем ее текст, на у далее в ссылке всегда
     // есть число такое же как текст в кнопке. Заменяем на свое и все ок.
     var $pager = $html.find('ul.pager_options li').has("a").last();
     var num = $pager.text().trim();
-    var pagerUrl = $pager.find('a').attr('href').replace(num, pages.toString());
-    // запросили обновление пагинации, дальше юзер решает что ему делать с этим
-    return $.get(pagerUrl);
+    return $pager.find('a').attr('href').replace(num, pages.toString());
 }
 // SAVE & LOAD ------------------------------------
 /**
@@ -1689,6 +1802,7 @@ function parseReportAdvertising(html, url) {
 /**
  * Со страницы со всеми продуктами игры парсит их список
  * https://virtonomica.ru/lien/main/common/main_page/game_info/products
+ * Брендовые товары здесь НЕ отображены и парсены НЕ БУДУТ
  * @param html
  * @param url
  */
@@ -1791,7 +1905,10 @@ function log(msg) {
         args[_i - 1] = arguments[_i];
     }
     msg = "unit report: " + msg;
-    logDebug(msg, args);
+    var arr = [];
+    arr.push(msg);
+    arr.push.apply(arr, args);
+    logDebug.apply(null, arr);
 }
 function run() {
     if (!isUnitMain(document.location.pathname, document, false)) {
@@ -1861,10 +1978,9 @@ function run() {
             var quantity = numberfyOrError(m, -1);
             var price = numberfy($tds.eq(4).text()); // может быть не изв. как значение
             var share = numberfyOrError($tds.eq(5).text(), -1);
-            if (quantities != null) {
-                var src = $(e).find("img").attr("src");
+            var src = $(e).find("img").attr("src");
+            if (quantities && quantities[src])
                 quantity = quantities[src] * share / 100.0;
-            }
             var turnover = price > 0 ? quantity * price : 0;
             var maxTurnover = share > 0 ? turnover * 100 / share : 0;
             total += turnover;
@@ -1920,12 +2036,12 @@ function run() {
                 }
                 $.when.apply($, tasks)
                     .then(function () {
+                    //if (args.length != imgSrcs.length)
+                    //    throw new Error("report: объемов рынков загрузилось не такое же колво что и товаров");
                     var args = [];
                     for (var _i = 0; _i < arguments.length; _i++) {
                         args[_i - 0] = arguments[_i];
                     }
-                    if (args.length != imgSrcs.length)
-                        throw new Error("report: объемов рынков загрузилось не такое же колво что и товаров");
                     var quantities = {};
                     Object.keys(sources).forEach(function (val, i, arr) {
                         quantities[val] = args[i];
@@ -1956,6 +2072,9 @@ function run() {
             for (var i = 0; i < imgs.length; i++) {
                 var imgSrc = imgs[i];
                 // среди продуктов найдем по картинке нужный
+                // НО есть разные брендовые товары которых нет в основном списке товаров. Их тупо пропустить
+                if (!preparedProd[imgSrc])
+                    continue;
                 var prodId = preparedProd[imgSrc].id;
                 var geo = geos[cityName].geocombo;
                 // /lien/main/globalreport/marketing/by_trade_at_cities/370077/7060/7065/7087

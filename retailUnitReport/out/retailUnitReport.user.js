@@ -7,7 +7,7 @@ var __extends = (this && this.__extends) || function (d, b) {
 // @name          Retail Unit Turnover report
 // @namespace     virtonomica
 // @description   Выводит для чужого юнита выручку по каждому товару, возможную выручку. Так же общую текущую выручку для юнита и потенциал если занять весь рынок по текущим ценам.
-// @version       1.4
+// @version       1.5
 // @include       https://virtonomic*.*/*/main/unit/view/*
 // @include       https://virtonomic*.*/*/window/unit/view/*
 // @require       https://code.jquery.com/jquery-1.11.1.min.js
@@ -283,6 +283,7 @@ function sayMoney(num, symbol) {
 // РЕГУЛЯРКИ ДЛЯ ССЫЛОК ------------------------------------
 // для 1 юнита
 // 
+var url_unit_rx = /\/[a-z]+\/(?:main|window)\/unit\/view\/\d+/i; // внутри юнита. любая страница
 var url_unit_main_rx = /\/\w+\/(?:main|window)\/unit\/view\/\d+\/?$/i; // главная юнита
 var url_unit_finance_report = /\/[a-z]+\/main\/unit\/view\/\d+\/finans_report(\/graphical)?$/i; // финанс отчет
 var url_trade_hall_rx = /\/[a-z]+\/main\/unit\/view\/\d+\/trading_hall\/?/i; // торговый зал
@@ -290,7 +291,7 @@ var url_supply_rx = /\/[a-z]+\/unit\/supply\/create\/\d+\/step2\/?$/i; // зак
 var url_equipment_rx = /\/[a-z]+\/window\/unit\/equipment\/\d+\/?$/i; // заказ оборудования на завод, лабу или куда то еще
 // для компании
 // 
-var url_unit_list_rx = /\/[a-z]+\/(?:main|window)\/company\/view\/\d+(\/unit_list)?(\/xiooverview)?$/i; // список юнитов. Работает и для списка юнитов чужой компании
+var url_unit_list_rx = /\/[a-z]+\/(?:main|window)\/company\/view\/\d+(\/unit_list)?(\/xiooverview|\/overview)?$/i; // список юнитов. Работает и для списка юнитов чужой компании
 var url_rep_finance_byunit = /\/[a-z]+\/main\/company\/view\/\d+\/finance_report\/by_units(?:\/.*)?$/i; // отчет по подразделениями из отчетов
 var url_rep_ad = /\/[a-z]+\/main\/company\/view\/\d+\/marketing_report\/by_advertising_program$/i; // отчет по рекламным акциям
 var url_manag_equip_rx = /\/[a-z]+\/window\/management_units\/equipment\/(?:buy|repair)$/i; // в окне управления юнитами групповой ремонт или закупка оборудования
@@ -300,13 +301,31 @@ var url_manag_empl_rx = /\/[a-z]+\/main\/company\/view\/\d+\/unit_list\/employee
 var url_global_products_rx = /[a-z]+\/main\/globalreport\/marketing\/by_products\/\d+\/?$/i; // глобальный отчет по продукции из аналитики
 var url_products_rx = /\/[a-z]+\/main\/common\/main_page\/game_info\/products$/i; // страница со всеми товарами игры
 /**
- * Если мы внутри своей компании, вернет истину. Если в чужой то ложь.
- * Можем находиться в любом юните или на главной странице. Не важно.
+ * По заданной ссылке и хтмл определяет находимся ли мы внутри юнита или нет.
+ * Если на задавать ссылку и хтмл то берет текущий документ.
+ * Вызов без параметров приводит к определению находимся ли мы своем юните сейчас
+ * @param urlPath
+ * @param $html
+ * @param my своя компания или нет?
  */
-function isMyCompany() {
-    if ($("div.officePlace a").attr("href") + "/dashboard" === $("a.dashboard").attr("href"))
-        return true;
-    return false;
+function isUnit(urlPath, $html, my) {
+    if (my === void 0) { my = true; }
+    if (!urlPath || !$html) {
+        urlPath = document.location.pathname;
+        $html = $(document);
+    }
+    // для ситуации когда мы внутри юнита характерно что всегда ссылка вида 
+    // https://virtonomica.ru/olga/main/unit/view/6452212/*
+    var urlOk = url_unit_rx.test(urlPath);
+    if (!urlOk)
+        return false;
+    // но у своего юнита ссыль на офис имеет тот же айди что и ссыль на дашборду. А для чужого нет
+    var urlOffice = $html.find("div.officePlace a").attr("href");
+    var urlDash = $html.find("a.dashboard").attr("href");
+    if (urlOffice.length === 0 || urlDash.length === 0)
+        throw new Error("Ссылка на офис или дашборду не может быть найдена");
+    var isMy = (urlOffice + "/dashboard" === urlDash);
+    return my ? isMy : !isMy;
 }
 /**
  * Проверяет что мы именно на своей странице со списком юнитов. По ссылке и id компании
@@ -1979,8 +1998,10 @@ function run() {
             var price = numberfy($tds.eq(4).text()); // может быть не изв. как значение
             var share = numberfyOrError($tds.eq(5).text(), -1);
             var src = $(e).find("img").attr("src");
-            if (quantities && quantities[src])
+            if (quantities && quantities[src]) {
                 quantity = quantities[src] * share / 100.0;
+                $tds.eq(1).text("~ " + Math.round(quantity));
+            }
             var turnover = price > 0 ? quantity * price : 0;
             var maxTurnover = share > 0 ? turnover * 100 / share : 0;
             total += turnover;

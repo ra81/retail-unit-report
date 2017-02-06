@@ -110,8 +110,10 @@ function run() {
             let share = numberfyOrError($tds.eq(5).text(), -1);
 
             let src = $(e).find("img").attr("src");
-            if (quantities && quantities[src])
+            if (quantities && quantities[src]) {
                 quantity = quantities[src] * share / 100.0;
+                $tds.eq(1).text(`~ ${Math.round(quantity)}`);
+            }
 
             let turnover = price > 0 ? quantity * price : 0;
             let maxTurnover = share > 0 ? turnover * 100 / share : 0;
@@ -120,6 +122,7 @@ function run() {
 
             turnover = Math.round(turnover);
             maxTurnover = Math.round(maxTurnover);
+
             $tds.eq(1).append(`<br/><span style="color:orange;">${sayMoney(turnover, "$")}</span>`);
             $tds.eq(1).append(`<br/><span style="color:gray;">${sayMoney(maxTurnover, "$")}</span>`);
         });

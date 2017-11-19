@@ -1,23 +1,17 @@
 ﻿
-/// <reference path= "../../_jsHelper/jsHelper/jsHelper.ts" />
-/// <reference path= "../../XioPorted/PageParsers/7_PageParserFunctions.ts" />
-/// <reference path= "../../XioPorted/PageParsers/1_Exceptions.ts" />
-/// <reference path= "../../XioPorted/PageParsers/2_IDictionary.ts" />
 
 $ = jQuery = jQuery.noConflict(true);
-$xioDebug = true;
+let Realm = getRealmOrError();
+
 type TGeo = { name: string, geocombo: string };
+
+
 
 // упрощаем себе жисть, подставляем имя скрипта всегда в сообщении
 function log(msg: string, ...args: any[]) {
-
-    msg = "unit report: " + msg;
-    let arr: any[] = [];
-    arr.push(msg);
-    arr.push.apply(arr, args);
-    logDebug.apply(null, arr);
+    msg = "unitReport: " + msg;
+    logDebug(msg, ...args);
 }
-
 
 function run() {
 
@@ -26,7 +20,8 @@ function run() {
         return;
     }
 
-    if (!isShop(document, false) && !isFuel(document, false)) {
+    let ut = parseUnitType($(document));
+    if (ut != UnitTypes.shop && ut != UnitTypes.fuel) {
         log("мы не в магазине и не в заправке");
         return;
     }
@@ -60,22 +55,31 @@ function run() {
     // вставим кнопку запроса уточнения по цифрам
     let $preciseBtn = $("<input type='button' value=' уточнить '></input>");
     $btnTd.append($preciseBtn);
-    $preciseBtn.on("click", (event) => {
+    $preciseBtn.on("click", async (event) => {
         $preciseBtn.prop("disabled", true);
         $errTd.children().remove();
 
-        $.when(doUpdate())
-            .then((quantities: IDictionary<number>) => { drawNumbers(quantities); })
-            .fail((err: string) => { appendErr("не смогли обновить данные => " + err); })
-            .always(() => $preciseBtn.prop("disabled", false));
-    });
+        try {
 
-    // название города где маг стоит
-    let cityName = $infoBlock.find("tr").eq(0).find("td").eq(1).text().split("(")[0].trim();
-    if (cityName.length === 0) {
-        appendErr("не нашел имя города в котором стоит данный магазин.");
-        return;
-    }
+            // урлы картинок нужны чтобы по ним найти рынки для данного товара в данном городе и взять объем рынка если чел нажмет а кнопку обновления
+            let imgSrcs: string[] = $rows.find("img").map((i, e) => $(e).attr("src")).get() as any;
+
+            // название города где маг стоит
+            let cityName = $infoBlock.find("tr").eq(0).find("td").eq(1).text().split("(")[0].trim();
+            if (cityName.length === 0)
+                throw new Error("не нашел имя города в котором стоит данный магазин.");
+
+            let qdict = await getMarketSizes_async(imgSrcs, cityName);
+            drawNumbers(qdict);
+        }
+        catch (err) {
+            appendErr("не смогли обновить данные => " + err);
+            throw err;
+        }
+        finally {
+            $preciseBtn.prop("disabled", false);
+        }
+    });
 
 
     // выводим общие цифры на основе чисто табличных данных. Ну и кнопку на обновление более точное
@@ -84,9 +88,6 @@ function run() {
         appendErr("не нашел ни одного товара.");
         return;
     }
-
-    // урлы картинок нужны чтобы по ним найти рынки для данного товара в данном городе и взять объем рынка если чел нажмет а кнопку обновления
-    let imgSrcs = $rows.find("img").map((i, e) => $(e).attr("src")) as any as string[];
 
     // грубые цифири чисто по таблице
     drawNumbers();
@@ -132,279 +133,302 @@ function run() {
         $turn.text(sayMoney(total, "$"));
         $turnMax.text(sayMoney(totalMax, "$"));
     }
+}
 
-    function doUpdate() {
+async function getMarketSizes_async(imgList: string[], cityName: string): Promise<IDictionary<number>> {
 
-        let doDefered = $.Deferred();
-        //if (1) {
-        //    doDefered.reject("тестовая ошибка");
-        //    return doDefered.promise();
-        //}
+    // собрали все продукты
+    let urlProducts = `/${Realm}/window/common/main_page/game_info/products`;
+    let html = await tryGet_async(urlProducts);
+    let products = parseProducts(html, urlProducts);
 
-        let realm = getRealm();
-        //debugger;
-        $.when(getProducts(), getGeos())
-            .then(function (args0: IProduct[], args1: IDictionary<TGeo>) {
-                let products = args0;
-                let geos = args1;
-                let deffered = $.Deferred();
+    // собираем геокомбы /422607/422609/422632
+    let geos = await getGeos_async();
 
-                try {
-                    // теперь для каждого продукта на странице надо найти рынок и его объем
-                    // сначала формируем ссылки на страницы откуда брать данне по объему
-                    // "url картинки товара" = "линк на рынок в данном городе для данного товара".
-                    let sources = makeImgDic(imgSrcs, products, cityName, geos);
+    // формируем урлы на маркетинговые отчеты 
+    let tm2prod: IDictionary<IProduct> | null = null;
+    let img2url: IDictionary<string> = {};
+    for (let img of imgList) {
+        let prod = products[img];
 
-                    log("", arguments);
-                    log("", sources);
+        // видимо ТМ надо искать в ТМ
+        if (prod == null) {
+            if (tm2prod == null)
+                tm2prod = await tm2product_async(products);
 
-                    // сразу разрешаем промис дабы начала выполняться следующая часть задачи
-                    deffered.resolve(sources);
-                }
-                catch (err) {
-                    let e = (err as Error);
-                    deffered.reject(e.message);
-                    log("ошибка: ", e);
-                }
-
-                return deffered.promise()
-            })
-            .then((sources: IDictionary<string>) => {
-                let deffered = $.Deferred();
-
-                try {
-                    // запросим объемы рынка для каждого линка в sources и отпарсим
-                    let tasks: JQueryPromise<{}>[] = [];
-                    for (let key in sources) {
-                        let url = sources[key];
-                        tasks.push(getQuantity(url));
-                    }
-
-                    $.when.apply($, tasks)
-                        .then((...args: number[]) => {
-                            //if (args.length != imgSrcs.length)
-                            //    throw new Error("report: объемов рынков загрузилось не такое же колво что и товаров");
-
-                            let quantities: IDictionary<number> = {};
-                            Object.keys(sources).forEach((val, i, arr) => {
-                                quantities[val] = args[i];
-                            });
-
-                            log("", quantities);
-                            deffered.resolve(quantities);
-                        })
-                        .fail((err: string) => {
-                            throw new Error(err);
-                        });
-                }
-                catch (err) {
-                    let e = (err as Error);
-                    deffered.reject(e.message);
-                    log("ошибка: ", e);
-                }
-
-                return deffered.promise();
-            })
-            .then((quants: IDictionary<number>) => doDefered.resolve(quants))
-            .fail((err: string) => {
-                doDefered.reject("не смогли уточнить данные по обороту => " + err);
-                //throw new Error("Не смогли уточнить данные.")
-            });
-
-        return doDefered.promise();
-
-        function makeImgDic(imgs: string[], products: IProduct[], city: string, geos: IDictionary<TGeo>) {
-            let res: IDictionary<string> = {};
-            let preparedProd = prepare(products);
-            for (let i = 0; i < imgs.length; i++) {
-                let imgSrc = imgs[i];
-
-                // среди продуктов найдем по картинке нужный
-                // НО есть разные брендовые товары которых нет в основном списке товаров. Их тупо пропустить
-                if (!preparedProd[imgSrc])
-                    continue;
-
-                let prodId = preparedProd[imgSrc].id;
-                let geo = geos[cityName].geocombo;
-                // /lien/main/globalreport/marketing/by_trade_at_cities/370077/7060/7065/7087
-                // <option class="geocombo f-mx" value="/422607/422609/422632">Акапулько</option>
-                let url = `/${realm}/main/globalreport/marketing/by_trade_at_cities/${prodId}${geo}`;
-                res[imgSrc] = url;
-
-            }
-
-            return res;
-
-            // конвертает в словарь массив по урлу картинки
-            function prepare(products: IProduct[]): IDictionary<IProduct> {
-                let res: IDictionary<IProduct> = {};
-                for (let i = 0; i < products.length; i++)
-                    res[products[i].img] = products[i];
-
-                return res;
-            }
+            prod = tm2prod[img];
+            if (prod == null)
+                throw new Error(`Не нашел ${img} ни среди товаров ни среди ТМ`);
         }
+
+        // /lien/main/globalreport/marketing/by_trade_at_cities/370077/7060/7065/7087
+        // <option class="geocombo f-mx" value="/422607/422609/422632">Акапулько</option>
+        let url = `/${Realm}/window/globalreport/marketing/by_trade_at_cities/${prod.id}${geos[cityName].geocombo}`;
+        img2url[img] = url; // TODO: тут ТМ картинки будут а потом косяки с ними
     }
 
-    // запрашивает полный список всех продуктов реалма
-    function getProducts() {
+    // по урлам запросим объемы рынков для всех товаров
+    let img2quant: IDictionary<number> = {};
+    let waitList: Promise<ICityRetailReport>[] = [];
+    for (let img in img2url)
+        waitList.push(getRep_async(img2url[img]));
 
-        let deffered = $.Deferred();
-        let realm = getRealm();
-        if (realm == null) {
-            deffered.reject("не нашли реалм");
-            return deffered.promise();
-        }
+    let reports = await Promise.all(waitList);
+    let repMap: IDictionary<number> = {};   // замаппим Картинка = отчет. Но тут нет ТМ учета и при ТМ товаре картинка от товара простого
+    for (let rep of reports)
+        repMap[rep.product.img] = rep.size;
 
-        // запросим список всех товаров что есть в игре
-        // _ttps://virtonomica.ru/lien/main/common/main_page/game_info/products
-        let urlProducts = `/${realm}/main/common/main_page/game_info/products`;
-        let retries = 10;
-        $.ajax({
-            url: urlProducts,
-            type: "GET",
 
-            success: (data, status, jqXHR) => {
-                try {
-                    let products = parseProducts(data, urlProducts);
-                    deffered.resolve(products);
-                }
-                catch (err) {
-                    let e = (err as Error);
-                    deffered.reject(e.message);
-                    log("ошибка: ", e);
-                }
+    // теперь нужно объем рынка сопоставить с картинкой товара и вернуть
+    let res: IDictionary<number> = {};
+    for (let img of imgList) {
+        // если товар простой то берем сразу, иначе берем товар из ТМ таблицы и берем сайз
+        let prod = products[img];
+        if (prod == null)
+            prod = nullCheck(tm2prod)[img];
 
-            },
-
-            error: function (this: JQueryAjaxSettings, jqXHR: JQueryXHR, textStatus: string, errorThrown: string) {
-                retries--;
-                if (retries <= 0) {
-                    deffered.reject("Не смог загрузить страницу " + this.url);
-                    return;
-                }
-
-                appendErr(`ошибка запроса ${this.url} осталось ${retries} попыток`);
-                let _this = this;
-                setTimeout(() => $.ajax(_this), 1000);
-            }
-        });
-
-        return deffered.promise();
+        res[img] = repMap[prod.img];
     }
 
-    // получает для каждого города вообще в мире, короткий аппендикс вида /34345/3453453/345345
-    // страна/регион/город. нам это нужно чтобы запрашивать объемы рынка для товаров в маге
-    function getGeos() {
+    return res;
 
-        let deffered = $.Deferred();
-        let realm = getRealm();
-        if (realm == null) {
-            deffered.reject("не нашли реалм");
-            return deffered.promise();
-        }
 
-        // залезем в селекты на странице и найдем селект городов, в нем в нужном месте айдишники региона и страны
-        // _ttps://virtonomica.ru/lien/main/globalreport/marketing/by_trade_at_cities
-        let urlGeocombo = `/${realm}/main/globalreport/marketing/by_trade_at_cities`;
-        let retries = 10;
-        $.ajax({
-            url: urlGeocombo,
-            type: "GET",
-
-            success: (data, status, jqXHR) => {
-
-                try {
-                    // для страницы розницы, нам надо тока выдрать из селекта все связки по городам и странам
-                    // брать 3 селект
-                    let geos = extractGeocombos($(data).find("select").eq(3));
-                    if (Object.keys(geos).length === 0)
-                        throw new Error("Не получилось вытащить геокомбо со страницы " + urlGeocombo);
-
-                    deffered.resolve(geos);
-                }
-                catch (err) {
-                    let e = (err as Error);
-                    deffered.reject(e.message);
-                    log("ошибка: ", e);
-                }
-            },
-
-            error: function (this: JQueryAjaxSettings, jqXHR: JQueryXHR, textStatus: string, errorThrown: string) {
-                retries--;
-                if (retries <= 0) {
-                    deffered.reject("Не смог загрузить страницу " + this.url);
-                    return;
-                }
-
-                log(`ошибка запроса ${this.url} осталось ${retries} попыток`);
-                let _this = this;
-                setTimeout(() => $.ajax(_this), 1000);
-            }
-        });
-
-        return deffered.promise();
-
-        // забирает из селекта все опции и формирует с них словарь. имя города - добавка к ссылке
-        function extractGeocombos($select: JQuery): IDictionary<TGeo> {
-            let res: IDictionary<TGeo> = {};
-
-            // <option class="geocombo f-mx" value= "/422607/422609/422632" > Акапулько < /option>
-            // забираем из опций value чтобы линк получить на объемы рынка.
-            $select.find("option.geocombo").each((i, e) => {
-                let cityName = getOnlyText($(e))[0];
-                let geo = $(e).val() as string;
-                res[cityName] = { name: cityName, geocombo: geo };
-            });
-
-            return res;
-        }
-    }
-
-    // по заданной ссылке парсит страницу рынка по рознице и находит объем рынка
-    function getQuantity(url: string) {
-
-        let deffered = $.Deferred();
-
-        let retries = 10;
-        $.ajax({
-            url: url,
-            type: 'GET',
-
-            success: (data, textStatus, jqXHR) => {
-                try {
-                    //if(1)
-                    //    throw new Error("тестовая ошибка " + url);
-
-                    let $td = $(data).find("td:contains('Объем рынка:')");
-                    if ($td.length != 1)
-                        throw new Error("Не нашел объем рынка для " + url);
-
-                    let quant = numberfyOrError($td.next("td").text());
-                    deffered.resolve(quant);
-                }
-                catch (err) {
-                    let e = (err as Error);
-                    deffered.reject(e.message);
-                    log("ошибка: ", e);
-                }
-            },
-
-            error: function (this: JQueryAjaxSettings, jqXHR: JQueryXHR, textStatus: string, errorThrown: string) {
-                retries--;
-                if (retries <= 0) {
-                    deffered.reject("Не смог загрузить страницу " + url);
-                    return;
-                }
-
-                log(`ошибка запроса ${url} осталось ${retries} попыток`);
-                let _this = this;
-                setTimeout(() => $.ajax(_this), 1000);
-            }
-        });
-
-        return deffered.promise();
+    async function getRep_async(url: string) {
+        let html = await tryGet_async(url);
+        return parseCityRetailReport(html, url);
     }
 }
+
+/**
+ * получает для каждого города вообще в мире, короткий аппендикс вида /34345/3453453/345345
+   страна/регион/город. нам это нужно чтобы запрашивать объемы рынка для товаров в маге
+ */
+async function getGeos_async() {
+
+    // залезем в селекты на странице и найдем селект городов, в нем в нужном месте айдишники региона и страны
+    let urlGeocombo = `/${Realm}/window/globalreport/marketing/by_trade_at_cities`;
+    let html = await tryGet_async(urlGeocombo);
+
+    // для страницы розницы, нам надо тока выдрать из селекта все связки по городам и странам
+    // брать 3 селект
+    let geos = extractGeocombos($(html).find("select").eq(3));
+    if (Object.keys(geos).length === 0)
+        throw new Error("Не получилось вытащить геокомбо со страницы " + urlGeocombo);
+
+    return geos;
+
+
+    // забирает из селекта все опции и формирует с них словарь. имя города - добавка к ссылке
+    function extractGeocombos($select: JQuery): IDictionary<TGeo> {
+        let res: IDictionary<TGeo> = {};
+
+        // <option class="geocombo f-mx" value= "/422607/422609/422632" > Акапулько < /option>
+        // забираем из опций value чтобы линк получить на объемы рынка.
+        $select.find("option.geocombo").each((i, e) => {
+            let cityName = getOnlyText($(e))[0];
+            let geo = $(e).val() as string;
+            res[cityName] = { name: cityName, geocombo: geo };
+        });
+
+        return res;
+    }
+}
+
+// формирует таблицу для конвертации ТМ товара в обычный
+async function tm2product_async(products: IDictionary<IProduct>): Promise<IDictionary<IProduct>> {
+
+    // забираем и парсим таблицу ТМ
+    let tm_info_tpl = `/${Realm}/window/globalreport/tm/info`;    // список всех брендовых товаров
+    let html = await tryGet_async(tm_info_tpl);
+    let tmDict = parseTM(html, tm_info_tpl);
+
+    // рисуем словарь ТМ картинка = стандартный продукт
+    let resDict: IDictionary<IProduct> = {};
+    for (let tmImg in tmDict) {
+        let tmProdName = tmDict[tmImg];
+
+        for (let img in products)
+            if (products[img].name === tmProdName) {
+                resDict[tmImg] = products[img];
+                break;
+            }
+
+
+        if (resDict[tmImg] == null)
+            throw new Error(`не смогли найти соответствие для ТМ товара ${tmImg}`);
+    }
+
+    return resDict;
+}
+
+function parseUnitType($html: JQuery): UnitTypes {
+
+    // классы откуда можно дернуть тип юнита грузятся скриптом уже после загрузки страницц
+    // и добавляются в дивы. Поэтому берем скрипт который это делает и тащим из него информацию
+    let lines = $html.find("div.title script").text().split(/\n/);
+
+    let rx = /\bbody\b.*?\bbg-page-unit-(.*)\b/i;
+    let typeStr = "";
+    for (let line of lines) {
+        let arr = rx.exec(line);
+        if (arr != null && arr[1] != null) {
+            typeStr = arr[1];
+            break;
+        }
+    }
+
+    if (typeStr.length <= 0)
+        throw new Error("Невозможно спарсить тип юнита");
+
+    // некоторый онанизм с конверсией но никак иначе
+    let type: UnitTypes = (UnitTypes as any)[typeStr] ? (UnitTypes as any)[typeStr] : UnitTypes.unknown;
+    if (type == UnitTypes.unknown)
+        throw new Error("Не описан тип юнита " + typeStr);
+
+    return type;
+}
+
+function isWindow($html: JQuery, url: string) {
+    return url.indexOf("/window/") > 0;
+}
+
+interface IProduct {
+    name: string;
+    img: string;    // полный путь картинки /img/products/clay.gif или /img/products/brand/clay.gif
+    id: number
+}
+interface IProductProperties {
+    price: number;
+    quality: number;
+    brand: number;
+}
+function parseProducts(html: any, url: string): IDictionary<IProduct> {
+    let $html = $(html);
+
+    try {
+        let $tbl = isWindow($html, url)
+            ? $html.filter("table.list")
+            : $html.find("table.list");
+
+        let $items = $tbl.find("a").has("img");
+        if ($items.length === 0)
+            throw new Error("не смогли найти ни одного продукта на " + url);
+
+        let dict: IDictionary<IProduct> = {};
+        $items.each((i, el) => {
+            let $a = $(el);
+
+            let _img = $a.find("img").eq(0).attr("src");
+
+            // название продукта Спортивное питание, Маточное молочко и так далее
+            let _name = $a.attr("title").trim();
+            if (_name.length === 0)
+                throw new Error("Имя продукта пустое.");
+
+            // номер продукта
+            let m = matchedOrError($a.attr("href"), /\d+/);
+            let _id = numberfyOrError(m, 0);  // должно быть больше 0 полюбому
+
+            dict[_img] = { id: _id, name: _name, img: _img };
+        });
+
+        return dict;
+    }
+    catch (err) {
+        throw err;
+    }
+}
+function parseTM(html: any, url: string): IDictionary<string> {
+    let $html = $(html);
+
+    try {
+        let $imgs = isWindow($html, url)
+            ? $html.filter("table.grid").find("img")
+            : $html.find("table.grid").find("img");
+
+        if ($imgs.length <= 0)
+            throw new Error("Не найдено ни одного ТМ товара.");
+
+        let dict: IDictionary<string> = {};
+        $imgs.each((i, el) => {
+            let $img = $(el);
+
+            let img = $img.attr("src");
+            let lines = getOnlyText($img.closest("td").next("td"));
+            if (lines.length !== 4)
+                throw new Error("ошибка извлечения имени товара франшизы для " + img);
+
+            dict[img] = lines[1].trim();
+        });
+
+        return dict;
+    }
+    catch (err) {
+        throw err;
+    }
+}
+
+interface ICityRetailReport {
+    product: IProduct;
+    index: MarketIndex;
+    size: number;
+    sellerCount: number;
+    companyCount: number;
+    locals: IProductProperties;
+    shops: IProductProperties;
+}
+function parseCityRetailReport(html: any, url: string): ICityRetailReport {
+    // удалим динамические графики ибо жрут ресурсы в момент $(html) они всегда загружаются без кэша
+    let $html = $(html.replace(/<img.*\/graph\/.*>/i, "<img>"));
+
+    try {
+        // какой то косяк верстки страниц и страница приходит кривая без второй таблицы, поэтому 
+        // строку с индексом находим по слову Индекс
+        let $r = oneOrError($html, "tr:contains('Индекс')");
+        let $tds = $r.children("td");
+
+        // продукт, индекс, объем рынка, число продавцов и компаний
+        let $img = oneOrError($tds.eq(0), "img");
+        let img = $img.attr("src");
+        let name = $img.attr("alt");
+        let nums = extractIntPositive(url);
+        if (nums == null)
+            throw new Error("Не получилось извлечь id товара из " + url);
+
+        let id = nums[0];
+        let indexStr = $tds.eq(2).text().trim();
+        let index = mIndexFromString(indexStr);
+
+        let quant = numberfyOrError($tds.eq(4).text(), -1);
+        let sellersCnt = numberfyOrError($tds.eq(6).text(), -1);
+        let companiesCnt = numberfyOrError($tds.eq(8).text(), -1);
+
+
+        let $priceTbl = oneOrError($html, "table.grid");
+        // местные
+        let localPrice = numberfyOrError($priceTbl.find("tr").eq(1).children("td").eq(0).text());
+        let localQual = numberfyOrError($priceTbl.find("tr").eq(2).children("td").eq(0).text());
+        let localBrand = numberfy($priceTbl.find("tr").eq(3).children("td").eq(0).text());   // может быть равен -
+
+        // магазины
+        let shopPrice = numberfyOrError($priceTbl.find("tr").eq(1).children("td").eq(1).text());
+        let shopQual = numberfyOrError($priceTbl.find("tr").eq(2).children("td").eq(1).text());
+        let shopBrand = numberfy($priceTbl.find("tr").eq(3).children("td").eq(1).text());   // может быть равен -
+
+        return {
+            product: { id: id, img: img, name: name },
+            index: index,
+            size: quant,
+            sellerCount: sellersCnt,
+            companyCount: companiesCnt,
+            locals: { price: localPrice, quality: localQual, brand: Math.max(localBrand, 0) },
+            shops: { price: shopPrice, quality: shopQual, brand: Math.max(shopBrand, 0) },
+        };
+    }
+    catch (err) {
+        throw err;
+    }
+}
+
 
 $(document).ready(() => run());
